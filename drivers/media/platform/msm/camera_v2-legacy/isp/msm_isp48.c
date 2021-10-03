@@ -12,7 +12,6 @@
 
 #include <linux/module.h>
 #include <linux/ratelimit.h>
-#include <linux/clk/msm-clk.h>
 
 #include "msm_isp_util.h"
 #include "msm_isp_axi_util.h"
@@ -190,18 +189,6 @@ static int msm_vfe48_get_clks(struct vfe_device *vfe_dev)
 		if (0 == strcmp(vfe_dev->vfe_clk_info[i].clk_name,
 					"vfe_clk_src"))
 			vfe_dev->hw_info->vfe_clk_idx = i;
-		/* set no memory retention */
-		if (strcmp(vfe_dev->vfe_clk_info[i].clk_name,
-				"camss_vfe_clk") == 0 ||
-			strcmp(vfe_dev->vfe_clk_info[i].clk_name,
-				"camss_csi_vfe_clk") == 0 ||
-			strcmp(vfe_dev->vfe_clk_info[i].clk_name,
-				"camss_vfe_vbif_axi_clk") == 0) {
-			msm_camera_set_clk_flags(vfe_dev->vfe_clk[i],
-				 CLKFLAG_NORETAIN_MEM);
-			msm_camera_set_clk_flags(vfe_dev->vfe_clk[i],
-				 CLKFLAG_NORETAIN_PERIPH);
-		}
 	}
 	return 0;
 }
@@ -240,8 +227,6 @@ struct msm_vfe_hardware_info vfe48_hw_info = {
 	.vfe_ops = {
 		.irq_ops = {
 			.read_irq_status = msm_vfe47_read_irq_status,
-			.read_irq_status_and_clear =
-				msm_vfe47_read_irq_status_and_clear,
 			.process_camif_irq = msm_vfe47_process_input_irq,
 			.process_reset_irq = msm_vfe47_process_reset_irq,
 			.process_halt_irq = msm_vfe47_process_halt_irq,
@@ -261,8 +246,6 @@ struct msm_vfe_hardware_info vfe48_hw_info = {
 			.clear_comp_mask = msm_vfe47_axi_clear_comp_mask,
 			.cfg_wm_irq_mask = msm_vfe47_axi_cfg_wm_irq_mask,
 			.clear_wm_irq_mask = msm_vfe47_axi_clear_wm_irq_mask,
-			.clear_irq_mask =
-				msm_vfe47_axi_clear_irq_mask,
 			.cfg_framedrop = msm_vfe47_cfg_framedrop,
 			.clear_framedrop = msm_vfe47_clear_framedrop,
 			.cfg_wm_reg = msm_vfe47_axi_cfg_wm_reg,
