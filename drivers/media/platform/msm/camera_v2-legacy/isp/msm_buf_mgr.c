@@ -30,6 +30,7 @@
 #include "msm.h"
 #include "msm_buf_mgr.h"
 #include "cam_smmu_api.h"
+#include "msm_isp_util.h"
 
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
@@ -749,11 +750,68 @@ static int msm_isp_update_put_buf_cnt(struct msm_isp_buf_mgr *buf_mgr,
 	if (-ENOTEMPTY == rc) {
 		pr_err("%s: Error! Uncleared put_buf_mask for pingpong(%d) from vfe %d bufq 0x%x buf_idx %d\n",
 			__func__, pingpong_bit, id, bufq_handle, buf_index);
+		msm_isp_dump_ping_pong_mismatch();
 		rc = -EFAULT;
 	}
 	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
 	return rc;
 }
+
+static int msm_isp_buf_err(struct msm_isp_buf_mgr *buf_mgr,
+	uint32_t bufq_handle, uint32_t buf_index,
+	struct timeval *tv, uint32_t frame_id, uint32_t output_format)
+{
+	int rc = 0;
+	unsigned long flags;
+	struct msm_isp_bufq *bufq = NULL;
+	struct msm_isp_buffer *buf_info = NULL;
+	enum msm_isp_buffer_state state;
+
+	bufq = msm_isp_get_bufq(buf_mgr, bufq_handle);
+	if (!bufq) {
+		pr_err("Invalid bufq\n");
+		return -EINVAL;
+	}
+
+	buf_info = msm_isp_get_buf_ptr(buf_mgr, bufq_handle, buf_index);
+	if (!buf_info) {
+		pr_err("%s: buf not found\n", __func__);
+		return -EINVAL;
+	}
+
+	spin_lock_irqsave(&bufq->bufq_lock, flags);
+	state = buf_info->state;
+
+	if (MSM_ISP_BUFFER_SRC_HAL == BUF_SRC(bufq->stream_id)) {
+		if (state == MSM_ISP_BUFFER_STATE_DEQUEUED) {
+			buf_info->state = MSM_ISP_BUFFER_STATE_DISPATCHED;
+			spin_unlock_irqrestore(&bufq->bufq_lock, flags);
+			buf_mgr->vb2_ops->buf_error(buf_info->vb2_v4l2_buf,
+				bufq->session_id, bufq->stream_id,
+				frame_id, tv, output_format);
+		} else {
+			spin_unlock_irqrestore(&bufq->bufq_lock, flags);
+		}
+		goto done;
+	}
+
+	/*
+	 * For native buffer put the diverted buffer back to queue since caller
+	 * is not going to send it to CPP, this is error case like
+	 * drop_frame/empty_buffer
+	 */
+	if (state == MSM_ISP_BUFFER_STATE_DIVERTED) {
+		buf_info->state = MSM_ISP_BUFFER_STATE_PREPARED;
+		rc = msm_isp_put_buf_unsafe(buf_mgr, buf_info->bufq_handle,
+			buf_info->buf_idx);
+		if (rc < 0)
+			pr_err("%s: Buf put failed\n", __func__);
+	}
+	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
+done:
+	return rc;
+}
+
 
 static int msm_isp_buf_done(struct msm_isp_buf_mgr *buf_mgr,
 	uint32_t bufq_handle, uint32_t buf_index,
@@ -1285,39 +1343,40 @@ static int msm_isp_deinit_isp_buf_mgr(
 int msm_isp_proc_buf_cmd(struct msm_isp_buf_mgr *buf_mgr,
 	unsigned int cmd, void *arg)
 {
+	int rc = -EINVAL;
 	switch (cmd) {
 	case VIDIOC_MSM_ISP_REQUEST_BUF: {
 		struct msm_isp_buf_request *buf_req = arg;
 
-		buf_mgr->ops->request_buf(buf_mgr, buf_req);
+		rc = buf_mgr->ops->request_buf(buf_mgr, buf_req);
 		break;
 	}
 	case VIDIOC_MSM_ISP_ENQUEUE_BUF: {
 		struct msm_isp_qbuf_info *qbuf_info = arg;
 
-		buf_mgr->ops->enqueue_buf(buf_mgr, qbuf_info);
+		rc = buf_mgr->ops->enqueue_buf(buf_mgr, qbuf_info);
 		break;
 	}
 	case VIDIOC_MSM_ISP_DEQUEUE_BUF: {
 		struct msm_isp_qbuf_info *qbuf_info = arg;
 
-		buf_mgr->ops->dequeue_buf(buf_mgr, qbuf_info);
+		rc = buf_mgr->ops->dequeue_buf(buf_mgr, qbuf_info);
 		break;
 	}
 	case VIDIOC_MSM_ISP_RELEASE_BUF: {
 		struct msm_isp_buf_request *buf_req = arg;
 
-		buf_mgr->ops->release_buf(buf_mgr, buf_req->handle);
+		rc = buf_mgr->ops->release_buf(buf_mgr, buf_req->handle);
 		break;
 	}
 	case VIDIOC_MSM_ISP_UNMAP_BUF: {
 		struct msm_isp_unmap_buf_req *unmap_req = arg;
 
-		buf_mgr->ops->unmap_buf(buf_mgr, unmap_req->fd);
+		rc = buf_mgr->ops->unmap_buf(buf_mgr, unmap_req->fd);
 		break;
 	}
 	}
-	return 0;
+	return rc;
 }
 
 static int msm_isp_buf_mgr_debug(struct msm_isp_buf_mgr *buf_mgr,
@@ -1466,6 +1525,7 @@ static struct msm_isp_buf_ops isp_buf_ops = {
 	.buf_mgr_debug = msm_isp_buf_mgr_debug,
 	.get_bufq = msm_isp_get_bufq,
 	.update_put_buf_cnt = msm_isp_update_put_buf_cnt,
+	.buf_err = msm_isp_buf_err,
 };
 
 int msm_isp_create_isp_buf_mgr(
